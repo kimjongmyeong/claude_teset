@@ -43,12 +43,19 @@ python main.py
 주식 가격 조회 핵심 모듈.
 
 **의존 라이브러리:**
-- `FinanceDataReader` - 주식 가격 데이터 조회 (KRX, NYSE, NASDAQ)
-- `yahooquery` - 영문 이름으로 심볼 검색
-
-> **참고:** Yahoo Finance는 한글 검색을 미지원. 영문 이름 검색 후 결과를 `stock_cache.json`에 자동 저장하여 재사용합니다.
+- `FinanceDataReader` - 주식 가격 조회
+- `beautifulsoup4` + `requests` - 네이버 검색 스크래핑으로 한글 종목 코드 조회
+- `yahooquery` - 영문 이름으로 심볼 검색 (fallback)
 
 **주요 함수:**
+
+#### `_get_krx_listing()`
+
+`fdr.StockListing('KRX')`를 세션 시작 시 한 번만 로드, 메모리에 유지합니다.
+
+#### `_search_naver_stock(name: str) -> str | None`
+
+`search.naver.com`을 스크래핑하여 한글/영문 이름으로 종목 코드를 조회합니다.
 
 #### `_resolve_symbol(symbol_or_name: str) -> tuple[str, str]`
 
@@ -57,13 +64,9 @@ python main.py
 | 입력 형태 | 처리 방식 |
 |---|---|
 | 6자리 숫자 (예: `005930`) | 한국 주식 코드로 직접 사용 |
-| 캐시에 있는 이름 | `stock_cache.json`에서 즉시 반환 |
 | ASCII 대문자 5자 이하 (예: `AAPL`) | 미국 티커로 직접 사용 |
-| 영문 이름 (예: `samsung`) | `yahooquery.search()` → 결과를 캐시에 저장 후 반환 |
-
-#### `_load_cache() / _save_cache()`
-
-`stock_cache.json` 읽기/쓰기. 검색 성공 시 자동으로 저장됩니다.
+| 한글/영문 이름 (예: `삼성전자`, `samsung`) | 네이버 검색 스크래핑으로 코드 조회 |
+| 영문 이름 (fallback) | `yahooquery.search()`로 검색 |
 
 #### `get_stock_price(symbol_or_name: str) -> tuple[float, str]`
 

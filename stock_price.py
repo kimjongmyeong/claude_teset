@@ -1,23 +1,71 @@
-import json
+import requests
+from bs4 import BeautifulSoup
 import FinanceDataReader as fdr
 from yahooquery import search
 from datetime import datetime, timedelta
-from pathlib import Path
+from io import StringIO
+import pandas as pd
 
-CACHE_FILE = Path(__file__).parent / "stock_cache.json"
-
-
-def _load_cache() -> dict:
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+# KRX 종목 목록 캐시 (이름 → 코드)
+_krx_map: dict[str, str] | None = None
 
 
-def _save_cache(cache: dict):
-    CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+def _load_krx_map() -> dict[str, str]:
+    """kind.krx.co.kr에서 상장 종목 이름→코드 매핑 로드."""
+    global _krx_map
+    if _krx_map is not None:
+        return _krx_map
+    try:
+        url = 'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        text = res.content.decode('euc-kr')
+        df = pd.read_html(StringIO(text))[0]
+        # 0번: 회사명, 2번: 종목코드
+        name_col = df.iloc[:, 0]
+        code_col = df.iloc[:, 2]
+        _krx_map = {
+            str(name): str(code).zfill(6)
+            for name, code in zip(name_col, code_col)
+            if pd.notna(name) and pd.notna(code) and str(code).replace('0', '')
+        }
+    except Exception:
+        _krx_map = {}
+    return _krx_map
+
+
+def get_stock_names() -> list[str]:
+    """KRX 상장 종목 이름 목록 반환 (자동완성용)."""
+    return list(_load_krx_map().keys())
+
+
+def _search_krx(name: str) -> str | None:
+    """KRX 목록에서 이름으로 코드 검색 (부분 일치)."""
+    krx_map = _load_krx_map()
+    # 정확히 일치
+    if name in krx_map:
+        return krx_map[name]
+    # 부분 일치 (첫 번째 결과)
+    for k, v in krx_map.items():
+        if name in k:
+            return v
+    return None
+
+
+def _search_naver_stock(name: str) -> str | None:
+    """네이버 검색으로 종목 코드 추출."""
+    try:
+        url = f"https://search.naver.com/search.naver?query={name}+주식"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        tag = soup.select_one('em.t_nm + span.t_code') or soup.select_one('span.s_code')
+        if tag:
+            return tag.text.strip()
+        link = soup.select_one('a[href*="item/main.naver?code="]')
+        if link:
+            return link['href'].split('code=')[-1]
+    except Exception:
+        pass
+    return None
 
 
 def _resolve_symbol(symbol_or_name: str) -> tuple[str, str]:
@@ -27,51 +75,39 @@ def _resolve_symbol(symbol_or_name: str) -> tuple[str, str]:
         (symbol, market): market은 'KRX' 또는 'US'
     """
     # 6자리 숫자: 한국 주식 코드 직접 사용
-    if symbol_or_name.isdigit():
+    if symbol_or_name.isdigit() and len(symbol_or_name) == 6:
         return symbol_or_name, 'KRX'
 
-    # 캐시 확인
-    key = symbol_or_name.lower().strip()
-    cache = _load_cache()
-    if key in cache:
-        entry = cache[key]
-        return entry["symbol"], entry["market"]
-
-    # ASCII 대문자 알파벳 5자 이하: 미국 티커 직접 사용
+    # ASCII 대문자 5자 이하: 미국 티커 직접 사용
     if symbol_or_name.isascii() and symbol_or_name.isalpha() and symbol_or_name.isupper() and len(symbol_or_name) <= 5:
         return symbol_or_name, 'US'
 
-    # yahooquery로 검색
-    try:
-        results = search(symbol_or_name)
-        quotes = results.get('quotes', []) if isinstance(results, dict) else []
-        if quotes:
-            # 한국 주식(.KS) 우선 선택
-            ks = [q for q in quotes if q.get('symbol', '').endswith('.KS')]
-            chosen = ks[0] if ks else quotes[0]
-            sym = chosen['symbol']
+    # KRX 목록에서 이름 검색 (가장 빠름)
+    code = _search_krx(symbol_or_name)
+    if code:
+        return code, 'KRX'
 
-            if sym.endswith('.KS'):
-                code = sym.replace('.KS', '')
-                cache[key] = {"symbol": code, "market": "KRX"}
-                _save_cache(cache)
-                return code, 'KRX'
+    # 네이버 검색으로 시도
+    code = _search_naver_stock(symbol_or_name)
+    if code:
+        return code, 'KRX'
 
-            cache[key] = {"symbol": sym, "market": "US"}
-            _save_cache(cache)
-            return sym, 'US'
-    except Exception:
-        pass
+    # 영문 이름: yahooquery로 검색
+    if symbol_or_name.isascii():
+        try:
+            results = search(symbol_or_name)
+            quotes = results.get('quotes', []) if isinstance(results, dict) else []
+            if quotes:
+                ks = [q for q in quotes if q.get('symbol', '').endswith('.KS')]
+                chosen = ks[0] if ks else quotes[0]
+                sym = chosen['symbol']
+                if sym.endswith('.KS'):
+                    return sym.replace('.KS', ''), 'KRX'
+                return sym, 'US'
+        except Exception:
+            pass
 
-    raise LookupError(symbol_or_name)
-
-
-def register_name(name: str, code: str):
-    """이름 → 코드 매핑을 캐시에 저장."""
-    cache = _load_cache()
-    market = 'KRX' if code.isdigit() else 'US'
-    cache[name.lower().strip()] = {"symbol": code, "market": market}
-    _save_cache(cache)
+    raise ValueError(f"'{symbol_or_name}'에 해당하는 종목을 찾을 수 없습니다. 종목 코드를 직접 입력하세요 (예: 005930, AAPL).")
 
 
 def get_stock_price(symbol_or_name: str) -> tuple[float, str]:
