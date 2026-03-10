@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python -c \":*)",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python stock_price.py)",
+      "Bash(.venv/Scripts/pip show beautifulsoup4)",
+      "Bash(.venv/Scripts/python -c \":*)",
+      "Bash(.venv/Scripts/pip show matplotlib)",
+      "Bash(rm -f nxt_api.txt nxt_check.txt nxt_full.txt test_cols.txt test_names.txt stock_cache.json PROJECT_OVERVIEW.md stock_price_development.md)",
+      "Bash(rm -rf __pycache__)"
+    ]
+  }
+}
