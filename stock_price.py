@@ -110,6 +110,62 @@ def _resolve_symbol(symbol_or_name: str) -> tuple[str, str]:
     raise ValueError(f"'{symbol_or_name}'에 해당하는 종목을 찾을 수 없습니다. 종목 코드를 직접 입력하세요 (예: 005930, AAPL).")
 
 
+def get_realtime_price(symbol: str) -> dict:
+    """네이버 polling API로 KRX + NXT 실시간 현재가 반환.
+
+    Returns:
+        {
+          'krx_price': int,
+          'krx_change': int,
+          'krx_ratio': float,
+          'nxt_price': int | None,
+          'nxt_change': int | None,
+          'nxt_ratio': float | None,
+          'nxt_active': bool,
+          'market_status': str,   # 'OPEN' | 'CLOSE'
+        }
+    """
+    url = f'https://polling.finance.naver.com/api/realtime/domestic/stock/{symbol}'
+    res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+    d = res.json()['datas'][0]
+
+    result = {
+        'krx_price': int(d['closePriceRaw']),
+        'krx_change': int(d['compareToPreviousClosePriceRaw']),
+        'krx_ratio': float(d['fluctuationsRatioRaw']),
+        'krx_direction': d['compareToPreviousPrice']['name'],
+        'market_status': d['marketStatus'],
+        'nxt_price': None,
+        'nxt_change': None,
+        'nxt_ratio': None,
+        'nxt_active': False,
+    }
+
+    over = d.get('overMarketPriceInfo')
+    if over and over.get('overMarketStatus') == 'OPEN':
+        result['nxt_price'] = int(over['overPrice'].replace(',', ''))
+        result['nxt_change'] = int(over['compareToPreviousClosePrice'].replace(',', ''))
+        result['nxt_ratio'] = float(over['fluctuationsRatio'])
+        result['nxt_active'] = True
+
+    return result
+
+
+def get_price_history(symbol_or_name: str, days: int = 30) -> tuple[pd.DataFrame, str]:
+    """종목의 최근 가격 히스토리를 반환.
+
+    Returns:
+        (df, symbol): Close 열을 포함한 DataFrame과 심볼.
+    """
+    symbol, _ = _resolve_symbol(symbol_or_name)
+    start = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+    end = datetime.today().strftime('%Y-%m-%d')
+    data = fdr.DataReader(symbol, start, end)
+    if data.empty:
+        raise ValueError(f"'{symbol}' 데이터를 가져올 수 없습니다.")
+    return data, symbol
+
+
 def get_stock_price(symbol_or_name: str) -> tuple[float, str]:
     """종목 심볼 또는 이름으로 현재 가격을 반환.
 
